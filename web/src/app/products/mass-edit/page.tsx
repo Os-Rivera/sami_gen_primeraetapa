@@ -1,40 +1,24 @@
-import prisma from '@/lib/prisma'
+import { dbQuery } from '@/lib/supabase'
 import { MassEditClient } from './MassEditClient'
 
-export default async function MassEditPage() {
-    // Fetch all products or a large set for mass editing
-    const products = await prisma.product.findMany({
-        orderBy: { updatedAt: 'desc' },
-        select: {
-            id: true,
-            code: true,
-            familia_code: true,
-            ref_code: true,
-            furniture_name: true,
-            edge_2mm_flag: true,
-            rh_flag: true,
-            assembled_flag: true,
-            commercial_measure: true,
-            accessory_text: true,
-            validation_status: true,
-            sap_description: true,
-            line: true,
-            zone_text: true,
-            color_code: true,
-            width_cm: true,
-            depth_cm: true,
-            height_cm: true,
-        }
-    })
+export const dynamic = 'force-dynamic'
 
-    // Fetch all families for name association
-    const familiasDb = await prisma.familia.findMany({
-        select: { code: true, name: true },
-        orderBy: { code: 'asc' }
-    })
-    const families = familiasDb.map(f => ({
-        value: f.code,
-        label: `${f.code} - ${f.name}`
+export default async function MassEditPage() {
+    const products = await dbQuery(`SELECT id, code, familia_code, ref_code, furniture_name, edge_2mm_flag, rh_flag, assembled_flag, commercial_measure, accessory_text, validation_status, sap_description, line, zone_home, designation, color_code, width_cm, depth_cm, height_cm, final_name_es, final_name_en FROM public.products ORDER BY updated_at DESC`) || []
+
+    const familiaRecords = await dbQuery(
+        `SELECT DISTINCT p.familia_code, f.name
+         FROM public.products p
+         LEFT JOIN public.familias f ON f.code = CASE 
+            WHEN p.familia_code ~ '^[VCP].*' THEN SUBSTRING(p.familia_code FROM 2)
+            ELSE p.familia_code 
+         END
+         WHERE p.familia_code IS NOT NULL
+         ORDER BY p.familia_code ASC`
+    ) || []
+    const families = familiaRecords.map((fam: any) => ({
+        value: fam.familia_code,
+        label: fam.name ? `${fam.familia_code} - ${fam.name}` : fam.familia_code
     }))
 
     return (

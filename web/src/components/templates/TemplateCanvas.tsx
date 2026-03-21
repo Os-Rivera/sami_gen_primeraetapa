@@ -5,11 +5,14 @@ import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { PlusCircle, Save, Type, Image as ImageIcon, Box, Move, AlignLeft, AlignCenter, AlignRight, Bold, Italic, Loader2, Eye, EyeOff, Minus, AlignHorizontalSpaceAround, AlignVerticalSpaceAround, AlignHorizontalJustifyStart, AlignVerticalJustifyStart, AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Undo2, Redo2, Copy, Trash2 } from 'lucide-react'
+import { PlusCircle, Save, Type, Image as ImageIcon, Box, Move, AlignLeft, AlignCenter, AlignRight, Bold, Italic, Loader2, Eye, EyeOff, Minus, AlignHorizontalSpaceAround, AlignVerticalSpaceAround, AlignHorizontalJustifyStart, AlignVerticalJustifyStart, AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Undo2, Redo2, Copy, Trash2, Settings, BookOpen } from 'lucide-react'
 import { toast } from 'sonner'
 import { updateTemplate, getPreviewProduct } from '@/app/templates/actions'
 import { useRouter } from 'next/navigation'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
+import { enrichProductData } from '@/lib/engine/productUtils'
 
 export type TemplateElementType = 'text' | 'dynamic_text' | 'image' | 'barcode' | 'box' | 'dashed_line'
 
@@ -29,22 +32,71 @@ export interface TemplateElement {
     fontFamily?: string
     borderStyle?: 'solid' | 'dashed' | 'dotted' // used for lines/boxes
     borderWidth?: number
+    required?: boolean
+    lineHeight?: number
+    textTransform?: 'none' | 'uppercase' | 'lowercase' | 'capitalize' | 'sentence'
 }
 
 const PIXELS_PER_MM = 4
 const MAX_HISTORY = 10
 
-function OverflowText({ text, textAlign, isPreviewMode, type, previewData, dataField }: { text: string, textAlign: 'left' | 'center' | 'right' | undefined, isPreviewMode: boolean, type: string, previewData?: any, dataField?: string }) {
+function OverflowText({ text, textAlign = 'left', isPreviewMode, type, previewData, dataField, lineHeight, textTransform }: { text: string, textAlign?: 'left' | 'center' | 'right' | undefined, isPreviewMode: boolean, type: string, previewData?: any, dataField?: string, lineHeight?: number, textTransform?: 'none' | 'uppercase' | 'lowercase' | 'capitalize' | 'sentence' }) {
     const textRef = useRef<HTMLDivElement>(null)
     const [isOverflowing, setIsOverflowing] = useState(false)
 
     // Regex replacement for rich text variables
     const displayText = React.useMemo(() => {
+        const applyTransform = (val: any) => {
+            if (!val || val === null || val === undefined || val === '') return '[VACIO]';
+            let s = String(val);
+            if (!textTransform || textTransform === 'none') return s;
+
+            const acronyms: string[] = ['RTI', 'RTA'];
+            const refs: string[] = [];
+            if (previewData) {
+                if (previewData.line) refs.push(String(previewData.line).toUpperCase());
+                if (previewData.furniture_name) refs.push(String(previewData.furniture_name).toUpperCase());
+            }
+
+            const words = s.split(' ');
+            const transformed = words.map((word, index) => {
+                // Remove punctuation for comparison
+                const cleanWord = word.replace(/[(),/\\.-]/g, '').toUpperCase();
+                const isAcronym = acronyms.includes(cleanWord);
+                const isRef = refs.includes(cleanWord);
+                
+                if (textTransform === 'uppercase') return word.toUpperCase();
+                if (textTransform === 'lowercase') return word.toLowerCase();
+
+                // Rule 1: Acronyms always in ALL CAPS
+                if (isAcronym) return word.toUpperCase();
+
+                // Rule 2: For Sentence Case (sentence)
+                if (textTransform === 'sentence') {
+                    // Capitalize first word or recognized model references
+                    if (index === 0 || isRef) {
+                        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+                    }
+                    return word.toLowerCase();
+                }
+
+                // Rule 3: For Title Case (capitalize)
+                if (textTransform === 'capitalize') {
+                    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+                }
+
+                return word;
+            });
+
+            return transformed.join(' ');
+        }
+
         if (!isPreviewMode || !previewData) return text
 
         if (type === 'dynamic_text') {
-            let val = previewData[text.replace(/[{}]/g, '')] || text
-            return val
+            const varName = text.replace(/[{}]/g, '');
+            const val = previewData[varName];
+            return applyTransform(val);
         }
 
         let interpolated = text
@@ -52,12 +104,13 @@ function OverflowText({ text, textAlign, isPreviewMode, type, previewData, dataF
         if (matches) {
             matches.forEach(match => {
                 const varName = match.slice(1, -1)
-                const val = previewData[varName] !== undefined ? previewData[varName] : match
-                interpolated = interpolated.replace(match, String(val))
+                const val = previewData[varName];
+                const replacement = applyTransform(val);
+                interpolated = interpolated.replace(match, replacement)
             })
         }
         return interpolated
-    }, [text, isPreviewMode, previewData, type])
+    }, [text, isPreviewMode, previewData, type, textTransform])
 
     useEffect(() => {
         if (!textRef.current || !isPreviewMode) {
@@ -111,7 +164,14 @@ function OverflowText({ text, textAlign, isPreviewMode, type, previewData, dataF
             className={`w-full h-full overflow-hidden pointer-events-none flex flex-col justify-center ${isOverflowing ? 'ring-2 ring-red-500 bg-red-100/50' : ''}`}
         >
             {isOverflowing && <span className="absolute -top-5 left-0 bg-red-500 text-white text-[9px] px-1 rounded shadow-sm z-50 pointer-events-none">Desbordamiento</span>}
-            <div style={{ textAlign, width: '100%', wordBreak: 'break-word', whiteSpace: 'pre-wrap', padding: '0 2px' }}>
+            <div style={{ 
+                textAlign, 
+                width: '100%', 
+                wordBreak: 'break-word', 
+                whiteSpace: 'pre-wrap', 
+                padding: '0 2px', 
+                lineHeight: lineHeight || 1.2
+            }}>
                 {renderTextContent()}
             </div>
         </div>
@@ -154,8 +214,51 @@ function RichTextEditor({ content, onChange, onInsertVariable }: { content: stri
                 <Button variant="ghost" size="icon-sm" className="h-6 w-6" onMouseDown={(e) => execCommand('underline', e)} title="Subrayado">
                     <u>U</u>
                 </Button>
+                <Button variant="ghost" size="icon-sm" className="h-6 w-6" onMouseDown={(e) => execCommand('removeFormat', e)} title="Borrar Formato">
+                    <Trash2 className="h-3 w-3 text-slate-400" />
+                </Button>
                 
                 <div className="h-4 w-px bg-slate-300 mx-1" />
+
+                <select
+                    className="h-6 text-[10px] rounded border bg-white hover:bg-slate-50 cursor-pointer px-1 outline-none font-bold text-slate-600"
+                    onChange={(e) => {
+                        const size = e.target.value;
+                        if (!size) return;
+                        
+                        // Use a more robust way to apply font size via execCommand + span replacement
+                        // since browser fontSize only supports 1-7
+                        document.execCommand('styleWithCSS', false, "true");
+                        document.execCommand('fontSize', false, "7");
+                        
+                        if (editorRef.current) {
+                            const fontEls = editorRef.current.getElementsByTagName('font');
+                            const spanEls = editorRef.current.getElementsByTagName('span');
+                            
+                            // Process both possible outcomes (some browsers use font, others use span with styleWithCSS)
+                            Array.from(fontEls).forEach(el => {
+                                if (el.getAttribute('size') === "7") {
+                                    el.removeAttribute('size');
+                                    el.style.fontSize = `${size}pt`;
+                                }
+                            });
+                            Array.from(spanEls).forEach(el => {
+                                if (el.style.fontSize === 'xxx-large' || el.style.fontSize === '48px') {
+                                    el.style.fontSize = `${size}pt`;
+                                }
+                            });
+                            
+                            onChange(editorRef.current.innerHTML);
+                        }
+                        e.target.value = "";
+                    }}
+                    value=""
+                >
+                    <option value="" disabled>Tamaño</option>
+                    {[6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 48].map(s => (
+                        <option key={s} value={s}>{s}pt</option>
+                    ))}
+                </select>
 
                 <select
                     className="h-6 text-[10px] rounded border bg-slate-100 hover:bg-slate-200 cursor-pointer px-1 outline-none ml-auto"
@@ -171,6 +274,7 @@ function RichTextEditor({ content, onChange, onInsertVariable }: { content: stri
                     <option value="final_name_es">Nombre (ES)</option>
                     <option value="final_name_en">Nombre (EN)</option>
                     <option value="code">Código Artículo (SKU)</option>
+                    <option value="sku_base">SKU Sin Color</option>
                     <option value="barcode_text">Código de Barras EAN</option>
                     <option value="color">Color (Nombre)</option>
                     <option value="color_code">Color (Código)</option>
@@ -178,7 +282,8 @@ function RichTextEditor({ content, onChange, onInsertVariable }: { content: stri
                     <option value="furniture_name">Nombre Mueble Genérico</option>
                     <option value="line">Línea</option>
                     <option value="commercial_measure">Medida Comercial</option>
-                    <option value="use_destination">Uso / Zona</option>
+                    <option value="use_destination">Uso</option>
+                    <option value="zone_home">Zona</option>
                     <option value="width_cm">Ancho (cm)</option>
                     <option value="depth_cm">Fondo (cm)</option>
                     <option value="height_cm">Alto (cm)</option>
@@ -187,6 +292,15 @@ function RichTextEditor({ content, onChange, onInsertVariable }: { content: stri
                     <option value="depth_in">Fondo (in)</option>
                     <option value="height_in">Alto (in)</option>
                     <option value="weight_lb">Peso (lb)</option>
+                    <option value="technical_description_es">Descripción Técnica (ES)</option>
+                    <option value="technical_description_en">Descripción Técnica (EN)</option>
+                    <option value="zone_home_en">Zona (EN)</option>
+                    <optgroup label="Iconos Dinámicos">
+                        <option value="icon_rh">Icono RH</option>
+                        <option value="icon_edge_2mm">Icono Canto</option>
+                        <option value="icon_soft_close">Icono Cierre</option>
+                        <option value="icon_full_extension">Icono Extensión</option>
+                    </optgroup>
                 </select>
             </div>
             <div
@@ -213,6 +327,9 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
     // Unsaved Changes Interception State
     const [showExitDialog, setShowExitDialog] = useState(false)
     const [pendingHref, setPendingHref] = useState<string | null>(null)
+    const [exportFormats, setExportFormats] = useState<string[]>(
+        template.export_formats ? template.export_formats.split(',') : ['pdf', 'jpg']
+    )
 
     // History Stack for Undo / Redo
     const [history, setHistory] = useState<TemplateElement[][]>([])
@@ -314,14 +431,22 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
         setIsModified(true)
 
         setHistory(prev => {
+            // Use the current historyIndex to slice. 
+            // Note: Since we need historyIndex here, we must keep it in deps.
             const newHistory = prev.slice(0, historyIndex + 1)
             newHistory.push([...newElements])
             if (newHistory.length > MAX_HISTORY) {
                 newHistory.shift()
+                // If we shifted, the index doesn't change relative to the end, 
+                // but since we are at the end, historyIndex+1 becomes the new length.
             }
             return newHistory
         })
-        setHistoryIndex(prev => Math.min(prev + 1, MAX_HISTORY - 1))
+        
+        setHistoryIndex(prev => {
+            const next = prev + 1
+            return next >= MAX_HISTORY ? MAX_HISTORY - 1 : next
+        })
     }, [historyIndex])
 
     const undo = useCallback(() => {
@@ -376,58 +501,111 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
     // Keyboard shortcuts
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            const activeTag = document.activeElement?.tagName || '';
+            const isInput = ['INPUT', 'SELECT', 'TEXTAREA'].includes(activeTag);
+            const isEditable = (document.activeElement as HTMLElement)?.isContentEditable;
+            const isTyping = isInput || isEditable;
+
+            const key = e.key.toLowerCase();
+
             // Undo: Ctrl+Z
-            if (e.ctrlKey && e.key === 'z') {
-                e.preventDefault()
-                undo()
+            if (e.ctrlKey && !e.shiftKey && key === 'z') {
+                if (!isTyping) {
+                    e.preventDefault()
+                    undo()
+                }
             }
             // Redo: Ctrl+Y or Ctrl+Shift+Z
-            if ((e.ctrlKey && e.key === 'y') || (e.ctrlKey && e.shiftKey && e.key === 'Z')) {
-                e.preventDefault()
-                redo()
+            if ((e.ctrlKey && key === 'y') || (e.ctrlKey && e.shiftKey && key === 'z')) {
+                if (!isTyping) {
+                    e.preventDefault()
+                    redo()
+                }
+            }
+
+            // Duplicate: Ctrl+D
+            if (e.ctrlKey && key === 'd') {
+                if (!isTyping && selectedIds.length > 0) {
+                    e.preventDefault()
+                    duplicateSelectedElements()
+                }
             }
 
             // Delete key
             if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.length > 0) {
-                // Ensure we are not typing in an input
-                if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'SELECT' && document.activeElement?.tagName !== 'TEXTAREA') {
+                if (!isTyping) {
                     e.preventDefault()
                     removeSelectedElements()
                 }
             }
 
             // Copy & Paste (Ctrl+C, Ctrl+V)
-            if (e.ctrlKey && e.key === 'c' && selectedIds.length > 0) {
-                if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'SELECT' && document.activeElement?.tagName !== 'TEXTAREA') {
+            if (e.ctrlKey && key === 'c') {
+                if (!isTyping && selectedIds.length > 0) {
+                    // We don't preventDefault here to allow standard text copy if something else is weirdly focused
+                    // but we do our internal copy
                     const toCopy = elements.filter(el => selectedIds.includes(el.id))
                     sessionStorage.setItem('template_clipboard', JSON.stringify(toCopy))
-                    toast("Copiado al portapapeles")
+                    toast("Elementos copiados")
                 }
             }
-            if (e.ctrlKey && e.key === 'v') {
-                if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'SELECT' && document.activeElement?.tagName !== 'TEXTAREA') {
+            if (e.ctrlKey && key === 'v') {
+                if (!isTyping) {
                     const stored = sessionStorage.getItem('template_clipboard')
                     if (stored) {
+                        e.preventDefault() // Prevent browser default paste if we are handling it
                         try {
                             const parsed: TemplateElement[] = JSON.parse(stored)
-                            const newEls = parsed.map(el => ({ ...el, id: crypto.randomUUID(), x: el.x + 10, y: el.y + 10 }))
+                            const newEls = parsed.map(el => ({ 
+                                ...el, 
+                                id: crypto.randomUUID(), 
+                                x: el.x + 10, 
+                                y: el.y + 10 
+                            }))
                             commitHistory([...elements, ...newEls])
                             setSelectedIds(newEls.map(e => e.id))
-                        } catch (e) {
-                            console.error(e)
+                            toast("Elementos pegados")
+                        } catch (err) {
+                            console.error(err)
                         }
+                    }
+                }
+            }
+
+            // Move with Arrows
+            if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key) && selectedIds.length > 0) {
+                if (!isTyping) {
+                    e.preventDefault()
+                    const step = e.shiftKey ? 20 : 4 // 5mm vs 1mm
+                    const dx = key === 'arrowleft' ? -step : key === 'arrowright' ? step : 0
+                    const dy = key === 'arrowup' ? -step : key === 'arrowdown' ? step : 0
+                    
+                    const newElements = elements.map(el => {
+                        if (selectedIds.includes(el.id)) {
+                            return { ...el, x: el.x + dx, y: el.y + dy }
+                        }
+                        return el
+                    })
+                    setElements(newElements)
+                    if (!e.repeat) {
+                        commitHistory(newElements)
+                    } else {
+                        // For repeated keys, we update state immediately and will commit eventually
+                        // To keep it simple, we commit every time but we could debounce
+                        commitHistory(newElements)
                     }
                 }
             }
         }
         window.addEventListener('keydown', handleKeyDown)
         return () => window.removeEventListener('keydown', handleKeyDown)
-    }, [undo, redo, selectedIds, elements, commitHistory, removeSelectedElements])
+    }, [undo, redo, selectedIds, elements, commitHistory, removeSelectedElements, duplicateSelectedElements])
 
     const handleSave = async () => {
         setIsSaving(true)
         const res = await updateTemplate(template.id, {
-            elements_json: JSON.stringify(elements)
+            elements_json: JSON.stringify(elements),
+            export_formats: exportFormats.join(',')
         })
         setIsSaving(false)
 
@@ -443,7 +621,7 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
         if (!isPreviewMode) {
             if (!previewData) {
                 const data = await getPreviewProduct()
-                setPreviewData(data)
+                setPreviewData(enrichProductData(data))
             }
         }
         setIsPreviewMode(!isPreviewMode)
@@ -465,7 +643,8 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
             textAlign: 'left',
             fontFamily: 'Montserrat',
             borderStyle: type === 'dashed_line' ? 'dashed' : 'solid',
-            borderWidth: type === 'dashed_line' ? 2 : 0
+            borderWidth: type === 'dashed_line' ? 2 : 0,
+            required: false
         }
 
         if (type === 'image') {
@@ -785,8 +964,41 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
 
                                     {/* Image type */}
                                     {el.type === 'image' && (
-                                        <div className="w-full h-full border-2 border-dashed border-gray-300 flex items-center justify-center bg-gray-50/50">
-                                            <span className="text-gray-400 text-xs font-semibold pointer-events-none p-1 text-center bg-white/70 rounded">[{el.content}]</span>
+                                        <div className="w-full h-full border-2 border-dashed border-gray-300 flex items-center justify-center bg-gray-50/50 overflow-hidden">
+                                            {isPreviewMode ? (
+                                                (() => {
+                                                    // 1. Try to find by name in assets (System Defaults)
+                                                    const systemAsset = assets.find(a => a.name === el.content);
+                                                    if (systemAsset && systemAsset.file_path) {
+                                                        return <img src={systemAsset.file_path} className="max-w-full max-h-full object-contain pointer-events-none" />
+                                                    }
+
+                                                    // 2. Special case for legacy 'logo_empresa' if not found by name
+                                                    if (el.content === 'logo_empresa') {
+                                                        const logoAsset = assets.find(a => a.type === 'logo' && a.name.toLowerCase().includes('logo'));
+                                                        if (logoAsset && logoAsset.file_path) return <img src={logoAsset.file_path} className="max-w-full max-h-full object-contain pointer-events-none" />
+                                                        return <span className="text-gray-400 text-[10px] text-center">[Logo Empresa No Encontrado]</span>
+                                                    }
+
+                                                    // 3. Special case for Isometric (Always dynamic from product)
+                                                    if (el.content === 'Isométrico' || el.content === 'isometrico_placeholder' || el.content === 'Isométrico (Placeholder)') {
+                                                        if (previewData?.isometric_path) {
+                                                            return <img src={previewData.isometric_path} className="max-w-full max-h-full object-contain pointer-events-none" />
+                                                        }
+                                                        return <span className="text-red-500 text-[10px] font-bold text-center border border-red-200 bg-red-50 p-1 rounded">[FALTA ISOMÉTRICO]</span>
+                                                    }
+
+                                                    // 4. Try to find by direct ID or Name in assets (Fallback)
+                                                    const asset = assets.find(a => a.id === el.content || a.name === el.content);
+                                                    if (asset && asset.file_path) {
+                                                        return <img src={asset.file_path} className="max-w-full max-h-full object-contain pointer-events-none" />
+                                                    }
+
+                                                    return <span className="text-gray-400 text-xs font-semibold pointer-events-none p-1 text-center bg-white/70 rounded">[{el.content}]</span>
+                                                })()
+                                            ) : (
+                                                <span className="text-gray-400 text-xs font-semibold pointer-events-none p-1 text-center bg-white/70 rounded">[{el.content}]</span>
+                                            )}
                                         </div>
                                     )}
 
@@ -800,12 +1012,10 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
                                     {/* Text types */}
                                     {(el.type === 'dynamic_text' || el.type === 'text') && (
                                         <OverflowText
+                                            {...el}
                                             text={el.type === 'dynamic_text' ? `{${el.dataField}}` : (el.content || '')}
-                                            textAlign={el.textAlign}
                                             isPreviewMode={isPreviewMode}
-                                            type={el.type}
                                             previewData={previewData}
-                                            dataField={el.dataField}
                                         />
                                     )}
                                 </div>
@@ -816,19 +1026,43 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
             </div>
 
             {/* Properties Panel */}
-            <div className="w-full xl:w-80 flex flex-col gap-4 shrink-0 overflow-y-auto max-h-[calc(100vh-140px)]">
-                <Card className="p-4 flex flex-col gap-4 bg-slate-50/50 shadow-inner">
-                    <h3 className="font-semibold text-lg border-b pb-2 flex justify-between items-center">
-                        <span>Propiedades</span>
-                        {selectedIds.length > 1 && <span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">{selectedIds.length} elementos</span>}
-                    </h3>
+            <div className="w-full xl:w-80 flex flex-col shrink-0 h-[calc(100vh-220px)] sticky top-4">
+                <Card className="flex-1 flex flex-col overflow-hidden bg-slate-50/50 shadow-inner">
+                    <div className="p-4 border-b border-slate-200 bg-white/50 backdrop-blur-sm flex justify-between items-center shrink-0">
+                        <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                            <Box className="h-4 w-4 text-indigo-500" />
+                            Propiedades
+                        </h3>
+                        {selectedIds.length > 1 && (
+                            <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-bold text-[10px]">
+                                {selectedIds.length} ítems
+                            </span>
+                        )}
+                    </div>
 
+                    <div className="flex-1 overflow-y-auto p-5 custom-scrollbar pb-12">
                     {activeEl ? (
                         <div className="flex flex-col gap-5">
                             <div>
                                 <Label className="text-xs text-muted-foreground uppercase tracking-wider mb-1 block">Tipo de Elemento</Label>
                                 <Input value={activeEl.type.replace('_', ' ').toUpperCase()} disabled className="bg-muted text-xs font-semibold shadow-none border-transparent" />
                             </div>
+
+                            {/* Required Field Toggle */}
+                            {(activeEl.type === 'text' || activeEl.type === 'dynamic_text' || activeEl.type === 'image' || activeEl.type === 'barcode') && (
+                                <div className="flex items-center space-x-2 bg-slate-100 p-2 rounded-md border border-slate-200">
+                                    <input 
+                                        type="checkbox" 
+                                        id="required-toggle"
+                                        checked={activeEl.required || false}
+                                        onChange={(e) => updateSelectedElements({ required: e.target.checked })}
+                                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                    />
+                                    <Label htmlFor="required-toggle" className="text-xs font-bold text-slate-700 cursor-pointer">
+                                        Campo Obligatorio (Bloquea Exportación si está vacío)
+                                    </Label>
+                                </div>
+                            )}
 
                             {activeEl.type === 'dynamic_text' && (
                                 <div>
@@ -842,6 +1076,7 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
                                         <option value="final_name_es">Nombre (ES)</option>
                                         <option value="final_name_en">Nombre (EN)</option>
                                         <option value="code">Código Artículo (SKU)</option>
+                                        <option value="sku_base">SKU Sin Color</option>
                                         <option value="barcode_text">Código de Barras EAN</option>
                                         <option value="color">Color (Nombre)</option>
                                         <option value="color_code">Color (Código)</option>
@@ -849,7 +1084,8 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
                                         <option value="furniture_name">Nombre Mueble Genérico</option>
                                         <option value="line">Línea</option>
                                         <option value="commercial_measure">Medida Comercial</option>
-                                        <option value="use_destination">Uso / Zona</option>
+                                        <option value="use_destination">Uso</option>
+                                        <option value="zone_home">Zona</option>
                                         <option value="width_cm">Ancho (cm)</option>
                                         <option value="depth_cm">Fondo (cm)</option>
                                         <option value="height_cm">Alto (cm)</option>
@@ -858,6 +1094,12 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
                                         <option value="depth_in">Fondo (in)</option>
                                         <option value="height_in">Alto (in)</option>
                                         <option value="weight_lb">Peso (lb)</option>
+                                        <optgroup label="Iconos Dinámicos">
+                                            <option value="icon_rh">Icono RH</option>
+                                            <option value="icon_edge_2mm">Icono Canto</option>
+                                            <option value="icon_soft_close">Icono Cierre</option>
+                                            <option value="icon_full_extension">Icono Extensión</option>
+                                        </optgroup>
                                     </select>
                                 </div>
                             )}
@@ -885,18 +1127,37 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
                                         value={activeEl.content || ''}
                                         onChange={(e) => updateSelectedElements({ content: e.target.value })}
                                     >
-                                        <option value="logo_empresa">Logo Empresa Pordefecto</option>
-                                        <option value="isometrico_placeholder">Isométrico (Placeholder)</option>
-                                        <option value="icon_rh">Icono RH Fijo</option>
-                                        <option value="icon_edge_2mm">Icono Canto 2mm</option>
-                                        <option value="icon_soft_close">Icono Cierre Lento</option>
-                                        <option value="icon_full_extension">Icono Extensión Total</option>
+                                        <option value="Logo Empresa Pordefecto">Logo Empresa Pordefecto</option>
+                                        <option value="Isométrico">Isométrico (Dinámico)</option>
+                                        <option value="Icono RH Fijo">Icono RH Fijo</option>
+                                        <option value="Icono Canto 2mm">Icono Canto 2mm</option>
+                                        <option value="Icono Cierre Lento">Icono Cierre Lento</option>
+                                        <option value="Icono Extensión Total">Icono Extensión Total</option>
 
-                                        {assets.length > 0 && <optgroup label="Assets (Base de Datos)">
-                                            {assets.map(a => (
-                                                <option key={a.id} value={a.id}>{a.name}</option>
-                                            ))}
-                                        </optgroup>}
+                                        {assets.filter(a => ![
+                                            'Logo Empresa Pordefecto',
+                                            'Isométrico',
+                                            'Icono RH Fijo',
+                                            'Icono Canto 2mm',
+                                            'Icono Cierre Lento',
+                                            'Icono Extensión Total'
+                                        ].includes(a.name)).length > 0 && (
+                                            <optgroup label="Assets (Base de Datos)">
+                                                {assets
+                                                    .filter(a => ![
+                                                        'Logo Empresa Pordefecto',
+                                                        'Isométrico',
+                                                        'Icono RH Fijo',
+                                                        'Icono Canto 2mm',
+                                                        'Icono Cierre Lento',
+                                                        'Icono Extensión Total'
+                                                    ].includes(a.name))
+                                                    .map(a => (
+                                                        <option key={a.id} value={a.id}>{a.name}</option>
+                                                    ))
+                                                }
+                                            </optgroup>
+                                        )}
                                     </select>
                                 </div>
                             )}
@@ -951,6 +1212,13 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
                                             <Input type="number" className="bg-white h-8" value={activeEl.fontSize || 10} onChange={(e) => updateSelectedElements({ fontSize: parseInt(e.target.value) || 10 })} />
                                         </div>
                                         <div>
+                                            <Label className="text-[11px] mb-1 block">Interlineado (Ej: 0.9)</Label>
+                                            <Input type="number" step="0.1" className="bg-white h-8" value={activeEl.lineHeight || 1.2} onChange={(e) => updateSelectedElements({ lineHeight: parseFloat(e.target.value) || 1.2 })} />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div>
                                             <Label className="text-[11px] mb-1 block">Alineación Horizontal</Label>
                                             <div className="flex gap-1">
                                                 <Button size="icon" variant={activeEl.textAlign === 'left' ? 'default' : 'outline'} className="h-8 w-8 bg-white" onClick={() => updateSelectedElements({ textAlign: 'left' })}>
@@ -964,9 +1232,6 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
                                                 </Button>
                                             </div>
                                         </div>
-                                    </div>
-
-                                    <div className="grid grid-cols-2 gap-3">
                                         <div>
                                             <Label className="text-[11px] mb-1 block">Peso de Fuente</Label>
                                             <select
@@ -979,6 +1244,9 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
                                                 <option value="bold">Negrilla (Bold)</option>
                                             </select>
                                         </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-3">
                                         <div>
                                             <Label className="text-[11px] mb-1 block">Cursiva</Label>
                                             <div className="flex gap-1">
@@ -986,6 +1254,20 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
                                                     <Italic className="h-3 w-3 mr-1" /> Activar
                                                 </Button>
                                             </div>
+                                        </div>
+                                        <div>
+                                            <Label className="text-[11px] mb-1 block">Transformación</Label>
+                                            <select
+                                                className="flex h-8 w-full rounded-md border border-input bg-white px-2 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                value={activeEl.textTransform || 'none'}
+                                                onChange={(e) => updateSelectedElements({ textTransform: e.target.value as any })}
+                                            >
+                                                <option value="none">Normal</option>
+                                                <option value="uppercase">MAYÚSCULAS</option>
+                                                <option value="lowercase">minúsculas</option>
+                                                <option value="capitalize">Tipo Título</option>
+                                                <option value="sentence">Tipo Oración</option>
+                                            </select>
                                         </div>
                                     </div>
                                 </div>
@@ -1037,6 +1319,52 @@ export function BuilderCanvas({ template, assets = [] }: { template: any, assets
                             Selecciona un elemento en el lienzo para configurar medidas.
                         </div>
                     )}
+
+                    {/* Global Template Settings (Visible when NO elements are selected) */}
+                    {!activeEl && selectedIds.length === 0 && (
+                        <div className="space-y-4 border-t pt-4 border-slate-200">
+                            <Label className="font-semibold text-xs text-muted-foreground uppercase flex items-center">Configuración de Plantilla</Label>
+                            
+                            <div className="flex flex-col gap-3">
+                                <Label className="text-xs font-bold text-slate-700">Formatos de Exportación Permitidos</Label>
+                                <div className="flex gap-2">
+                                    {(['pdf', 'jpg'] as const).map(fmt => (
+                                        <button
+                                            key={fmt}
+                                            onClick={() => {
+                                                const newFormats = exportFormats.includes(fmt)
+                                                    ? exportFormats.filter(f => f !== fmt)
+                                                    : [...exportFormats, fmt]
+                                                if (newFormats.length > 0) {
+                                                    setExportFormats(newFormats)
+                                                    setIsModified(true)
+                                                } else {
+                                                    toast.error("Debes permitir al menos un formato")
+                                                }
+                                            }}
+                                            className={`flex-1 py-2 px-3 text-xs font-bold rounded-md border transition-all ${
+                                                exportFormats.includes(fmt)
+                                                ? 'bg-indigo-600 border-indigo-600 text-white shadow-md'
+                                                : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'
+                                            }`}
+                                        >
+                                            {fmt.toUpperCase()}
+                                        </button>
+                                    ))}
+                                </div>
+                                <p className="text-[10px] text-slate-400">
+                                    Define qué formatos podrán elegir los usuarios al exportar productos con esta plantilla.
+                                </p>
+                            </div>
+
+                            <div className="bg-amber-50 border border-amber-100 p-3 rounded-md mt-4">
+                                <p className="text-[10px] text-amber-700 leading-tight">
+                                    <b>Tipografía:</b> Esta plantilla utiliza <b>Montserrat</b> por defecto. Asegúrate de que los textos sean legibles antes de guardar.
+                                </p>
+                            </div>
+                        </div>
+                        )}
+                    </div>
                 </Card>
             </div>
 

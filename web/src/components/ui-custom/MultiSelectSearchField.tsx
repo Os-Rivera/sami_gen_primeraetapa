@@ -56,21 +56,30 @@ export function MultiSelectSearchField({
     onChange(newValues)
   }
 
-  const selectedLabels = values.length > 0 
-    ? options.filter((o) => values.includes(o.value)).map(o => o.label).join(", ")
-    : placeholder
+  const selectedLabels = React.useMemo(() => {
+    if (values.length === 0) return placeholder
+    if (values.length === options.length && options.length > 0) return `Todos (${values.length})`
+    if (values.length > 1) return `${values.length} seleccionados`
+    
+    const singleOption = options.find((o) => values.includes(o.value))
+    return singleOption ? singleOption.label : placeholder
+  }, [values, options, placeholder])
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        className={cn(buttonVariants({ variant: "outline" }), "w-full justify-between font-normal", className)}
+        className={cn(
+          buttonVariants({ variant: "outline" }), 
+          "w-full max-w-full justify-between font-normal bg-white border-slate-200 text-slate-700 shadow-sm hover:border-indigo-200 hover:bg-slate-50 transition-all overflow-hidden", 
+          className
+        )}
       >
-        <span className="truncate">
+        <span className="truncate min-w-0 flex-1 text-left">
           {selectedLabels}
         </span>
-        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50 text-slate-400" />
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1 rounded-xl border-slate-200 shadow-premium" align="start">
         <Command>
           <CommandInput placeholder={`Buscar ${placeholder.toLowerCase()}...`} />
           <CommandList>
@@ -89,14 +98,14 @@ export function MultiSelectSearchField({
                 className="flex items-center"
               >
                 <div className={cn(
-                    "mr-2 flex h-4 w-4 items-center justify-center rounded-sm border border-primary",
+                    "mr-2 flex h-4 w-4 items-center justify-center rounded-sm border border-slate-300 transition-colors",
                     values.length === options.length && options.length > 0
-                    ? "bg-primary text-primary-foreground"
-                    : "opacity-50 [&_svg]:invisible"
+                    ? "bg-indigo-500 border-indigo-500 text-white"
+                    : "opacity-50 [&_svg]:invisible bg-white"
                 )}>
-                    <Check className="h-4 w-4" />
+                    <Check className="h-3 w-3" />
                 </div>
-                (Seleccionar todas)
+                <span className="font-medium text-slate-700">(Seleccionar todas)</span>
               </CommandItem>
               {options.map((option) => (
                 <CommandItem
@@ -110,14 +119,14 @@ export function MultiSelectSearchField({
                   className="flex items-center"
                 >
                    <div className={cn(
-                        "mr-2 flex h-4 w-4 items-center justify-center rounded-sm border border-primary",
+                        "mr-2 flex h-4 w-4 items-center justify-center rounded-sm border border-slate-300 transition-colors",
                         values.includes(option.value)
-                        ? "bg-primary text-primary-foreground"
-                        : "opacity-50 [&_svg]:invisible"
+                        ? "bg-indigo-500 border-indigo-500 text-white"
+                        : "opacity-50 [&_svg]:invisible bg-white"
                     )}>
-                        <Check className="h-4 w-4" />
+                        <Check className="h-3 w-3" />
                     </div>
-                  {option.label}
+                  <span className="text-slate-700">{option.label}</span>
                 </CommandItem>
               ))}
             </CommandGroup>
