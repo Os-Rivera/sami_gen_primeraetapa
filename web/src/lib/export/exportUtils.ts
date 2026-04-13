@@ -1,4 +1,5 @@
 import { dbQuery } from '@/lib/supabase'
+import { PIXELS_PER_MM } from '@/lib/constants'
 
 export interface ExportOptions {
     html: string
@@ -7,126 +8,148 @@ export interface ExportOptions {
     height: number
 }
 
-/**
- * Resuelve todos los assets (UUIDs) y placeholders en los elementos de la plantilla
- * a sus URLs/Rutas reales desde la base de datos.
- */
-export async function resolveTemplateAssets(elements: any[], product: any, assetMap: Record<string, string>): Promise<any[]> {
-    const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+const normalizeString = (str: string) => {
+    return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim()
+}
 
-    const ensureAbsolute = (path: string) => {
-        if (!path) return ''
-        if (path.startsWith('http')) return path
-        if (path.startsWith('/')) return `${baseUrl}${path}`
-        return `${baseUrl}/storage/v1/object/public/${path}`
+export const getVariableValue = (context: any, field: string) => {
+    if (!context || !field) return ''
+    
+    // 1. Try exact match
+    if (context[field] !== undefined && context[field] !== null) {
+        return String(context[field])
     }
 
-    return elements.map(el => {
-        if (el.type === 'image') {
-            let finalSrc = el.content || ''
-            
-            // 1. Check if it's a UUID or a direct Name in the assetMap
-            if (assetMap[finalSrc]) {
-                finalSrc = assetMap[finalSrc]
-            } 
-            // 2. Fallbacks for system defaults
-            else if (finalSrc === 'logo_empresa' && assetMap['Logo Empresa Pordefecto']) {
-                finalSrc = assetMap['Logo Empresa Pordefecto']
-            }
-            else if (finalSrc === 'isometrico_placeholder' || finalSrc === 'Isométrico' || finalSrc === 'Isométrico (Placeholder)') {
-                finalSrc = product.isometric_path || ''
-            }
-            // 3. Fallback for dataField if specified
-            else if (el.dataField === 'isometric_path') {
-                finalSrc = product.isometric_path || ''
-            }
+    // 2. Special technical mappings
+    if (field === 'color' || field === 'color_name' || field === 'name_color_sap') {
+        return context.color_name || context.name_color_sap || ''
+    }
+    if (field === 'color_code') return context.color_code || ''
 
-            return { ...el, resolvedSrc: ensureAbsolute(finalSrc) }
-        }
-        return el
+    // 3. Normalized search (case-insensitive, tilde-insensitive)
+    const normalizedTarget = normalizeString(field)
+    
+    // Cache normalized keys for performance if this is called frequently, 
+    // but for a single product context, a simple find is fine.
+    const matchingKey = Object.keys(context).find(key => normalizeString(key) === normalizedTarget)
+    
+    if (matchingKey) {
+        const val = context[matchingKey]
+        return (val === null || val === undefined) ? '' : String(val)
+    }
+
+    return ''
+}
+
+export const hydrateText = (text: string, context: any) => {
+    if (!text) return ''
+    return text.replace(/{([^}]+)}/g, (_: string, field: string) => {
+        return getVariableValue(context, field)
     })
 }
 
 /**
- * Genera el HTML completo para enviar a Puppeteer, incluyendo inyección de fuentes.
+ * Función maestra de hidratación (R6).
+ * Resuelve variables {field}, activos (UUIDs) e iconos dinámicos en una sola pasada.
+ * Se usa tanto en Preview (React) como en Export (HTML).
  */
-export function generateExportHtml(
+export async function hydrateTemplateElements(
     elements: any[], 
     product: any, 
-    width: number, 
-    height: number
-): string {
-    // Detectar fuentes únicas
-    const fontFamilies = Array.from(new Set(elements.map(el => el.fontFamily || 'Montserrat')))
-    const googleFontsImport = fontFamilies
-        .map(f => `@import url('https://fonts.googleapis.com/css2?family=${f.replace(/\s+/g, '+')}:wght@400;500;600;700&display=swap');`)
-        .join('\n')
+    assetMap: Record<string, string>
+): Promise<any[]> {
+    const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+    
+    // 1. Enriquecer producto con iconos dinámicos (R1, R2)
+    const { enrichProductDataWithIcons } = await import('@/lib/engine/productUtils')
+    const enrichedProduct = enrichProductDataWithIcons(product, assetMap)
 
-    const htmlElements = elements.map((el: any) => {
-        const style = [
-            `left:${el.x}px`,
-            `top:${el.y}px`,
-            `width:${el.width}px`,
-            `height:${el.height}px`,
-            `font-size:${el.fontSize || 14}px`,
-            `font-weight:${el.fontWeight || 'normal'}`,
-            `font-style:${el.fontStyle || 'normal'}`,
-            `text-align:${el.textAlign || 'left'}`,
-            `font-family:'${el.fontFamily || 'Montserrat'}', sans-serif`,
-            `color:${el.color || '#000'}`,
-            `background-color:${el.backgroundColor || 'transparent'}`,
-            `line-height:1.2`,
-            `display:flex`,
-            `align-items:center`,
-            `justify-content:${el.textAlign === 'right' ? 'flex-end' : el.textAlign === 'center' ? 'center' : 'flex-start'}`,
-            `overflow:hidden`
-        ].join(';')
+    const ensureAbsolute = (path: string) => {
+        if (!path || path === 'undefined' || path === 'null') return ''
+        if (path.startsWith('http')) return path
+        if (path.startsWith('data:')) return path
+        
+        // Limpiar el path si ya trae el prefijo de bucket
+        const cleanPath = path.startsWith('assets/') ? path.slice(7) : path
+        if (cleanPath.startsWith('/')) return `${baseUrl}${cleanPath}`
+        
+        return `${baseUrl}/storage/v1/object/public/assets/${cleanPath}`
+    }
 
-        if (el.type === 'barcode') {
-            return `<div class="el" style="${style};background:#000;color:#fff;font-family:monospace;font-size:10px;">|||| ${product.code} ||||</div>`
+    return elements.map(el => {
+        const cloned = { ...el }
+
+        // Resolución de activos de imagen (R8)
+        if (cloned.type === 'image') {
+            let content = cloned.content || ''
+            let src = ''
+
+            // 1. Mapeo por asset id (UUID)
+            if (assetMap[content]) {
+                src = assetMap[content]
+            } 
+            // 2. Mapeo de assets de sistema y lógica de Marca Propia
+            else if (content === 'logo_empresa' || content === 'Logo Empresa Pordefecto') {
+                // Si es Marca Propia y hay un logo específico, lo priorizamos
+                if (product.private_label_flag && product.private_label_logo_id && assetMap[product.private_label_logo_id]) {
+                    src = assetMap[product.private_label_logo_id]
+                } else {
+                    src = assetMap['Logo Empresa Pordefecto'] || assetMap['logo_empresa'] || ''
+                }
+            }
+            // 3. Mapeo de isométrico (R8)
+            else if (['isometrico_placeholder', 'Isométrico', 'Isométrico (Placeholder)', 'isometric_path', 'image'].includes(content) || cloned.dataField === 'isometric_path') {
+                src = product.isometric_path || ''
+            }
+            else {
+                src = content
+            }
+            
+            cloned.resolvedSrc = ensureAbsolute(src)
         }
 
-        if (el.type === 'dashed_line') {
-            const borderStyle = el.borderStyle || 'solid'
-            const borderWidth = el.borderWidth || 2
-            const borderColor = el.color || '#334155'
-            return `<div class="el" style="${style};border-bottom:${borderWidth}px ${borderStyle} ${borderColor};height:0;"></div>`
+        // Resolución de íconos dinámicos / RH / Canto (R1, R3)
+        if (cloned.type === 'dynamic_image') {
+            const iconUrl = cloned.dataField ? (enrichedProduct[`${cloned.dataField}_url`] || null) : null
+            cloned.resolvedSrc = iconUrl ? ensureAbsolute(iconUrl) : null
+            
+            // Hidratar el caption si existe (ej: {caption_es})
+            if (cloned.caption) {
+                // El contexto para el caption suele ser campos específicos inyectados por el motor de iconos
+                // como icon_canto_caption_es que se mapean a {caption_es} en el builder
+                const captionContext = {
+                    ...enrichedProduct,
+                    caption_es: enrichedProduct[`${cloned.dataField}_caption_es`] || '',
+                    caption_en: enrichedProduct[`${cloned.dataField}_caption_en`] || ''
+                }
+                cloned.caption = hydrateText(cloned.caption, captionContext)
+            }
         }
 
-        if (el.type === 'image') {
-            const src = el.resolvedSrc || ''
-            if (!src) return `<div class="el" style="${style};border:1px dashed #ccc;color:#ccc;font-size:10px;">[Imagen no disponible]</div>`
-            // Asegurar que la URL sea absoluta si viene de storage local (esto depende de la config de Supabase)
-            return `<div class="el" style="${style}"><img src="${src}" style="width:100%;height:100%;object-fit:contain;" /></div>`
+        // Hidratación de contenido de texto y dynamic_text (R4, R5)
+        if (cloned.type === 'text' || cloned.type === 'dynamic_text') {
+            let rawContent = cloned.content || ''
+            if (cloned.type === 'dynamic_text' && cloned.dataField) {
+                rawContent = `{${cloned.dataField}}`
+            }
+            let hydrated = hydrateText(rawContent, enrichedProduct)
+            // Limpieza de artefactos visuales inyectados por el Template Builder en variables técnicas (punteados, cursores)
+            hydrated = hydrated.replace(/text-decoration:\s*underline\s*dotted[^;"]+;?/gi, '')
+            hydrated = hydrated.replace(/cursor:\s*text;?/gi, '')
+            cloned.content = hydrated
         }
 
-        // Para texto y dynamic_text
-        let content = el.content || ''
-        return `<div class="el" style="${style}"><div style="width:100%;">${content}</div></div>`
-    }).join('')
-
-    return `
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <style>
-        ${googleFontsImport}
-        body { margin: 0; padding: 0; background: white; -webkit-print-color-adjust: exact; }
-        .canvas { 
-            position: relative; 
-            width: ${width}px; 
-            height: ${height}px; 
-            overflow: hidden; 
-            background: white;
-        }
-        .el { position: absolute; box-sizing: border-box; }
-    </style>
-</head>
-<body>
-    <div class="canvas">
-        ${htmlElements}
-    </div>
-</body>
-</html>`
+        return cloned
+    })
 }
+
+/**
+ * @deprecated Use hydrateTemplateElements instead for a unified logic.
+ * Mantener temporalmente para evitar rupturas mientras migramos el resto de archivos.
+ */
+export async function resolveTemplateAssets(elements: any[], product: any, assetMap: Record<string, string>): Promise<any[]> {
+    return hydrateTemplateElements(elements, product, assetMap)
+}
+
+
+

@@ -13,7 +13,7 @@ import { PlusCircle, DatabaseZap, Search } from 'lucide-react'
 import Link from 'next/link'
 import { ImportCsvButton } from '@/components/products/ImportCsvButton'
 import { ProductSearch } from '@/components/products/ProductSearch'
-import { AiTranslateButton } from '@/components/products/AiTranslateButton'
+import { cn } from '@/lib/utils'
 
 export default async function ProductsPage({
     searchParams: searchParamsPromise
@@ -32,6 +32,13 @@ export default async function ProductsPage({
     const r = toArray(searchParams?.r)
     const m = toArray(searchParams?.m)
 
+    // Construct query string for persistence
+    const urlParams = new URLSearchParams()
+    f.forEach(v => urlParams.append('f', v))
+    r.forEach(v => urlParams.append('r', v))
+    m.forEach(v => urlParams.append('m', v))
+    const filterQuery = urlParams.toString() ? `?${urlParams.toString()}` : ''
+
     const hasFilter = f.length > 0 || r.length > 0 || m.length > 0
 
     let products: any[] = []
@@ -40,10 +47,10 @@ export default async function ProductsPage({
         if (f.length > 0) conditions.push(`familia_code IN (${f.map(v => `'${v.replace(/'/g, "''")}'`).join(',')})`)
         if (r.length > 0) conditions.push(`ref_code IN (${r.map(v => `'${v.replace(/'/g, "''")}'`).join(',')})`)
         if (m.length > 0) conditions.push(`commercial_measure IN (${m.map(v => `'${v.replace(/'/g, "''")}'`).join(',')})`)
-        const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+        const where = conditions.length > 0 ? `WHERE status = 'ACTIVO' AND ${conditions.join(' AND ')}` : "WHERE status = 'ACTIVO'"
         products = await dbQuery(
             `SELECT p.*, c.name_color_sap as color_name
-             FROM public.products p
+             FROM public.cabinet_products p
              LEFT JOIN public.colors c ON p.color_code = c.code_4dig
              ${where} ORDER BY p.updated_at DESC LIMIT 100`
         ) || []
@@ -54,7 +61,7 @@ export default async function ProductsPage({
     const familiaRecords = await dbQuery(
         `SELECT familia_code, MAX(name) as name FROM (
             SELECT DISTINCT p.familia_code, f.name
-            FROM public.products p
+            FROM public.cabinet_products p
             LEFT JOIN public.familias f ON f.code = CASE 
                 WHEN p.familia_code ~ '^[VCP].*' THEN SUBSTRING(p.familia_code FROM 2)
                 ELSE p.familia_code 
@@ -70,48 +77,41 @@ export default async function ProductsPage({
     let references: {value: string, label: string}[] = []
     if (f.length > 0) {
         const fFilter = f.map((v: string) => `'${v.replace(/'/g, "''")}'`).join(',')
-        const mFilter = m.length > 0 ? `AND commercial_measure IN (${m.map(v => `'${v.replace(/'/g, "''")}'`).join(',')})` : ''
-        
+
         const refRecords = await dbQuery(`
-            SELECT ref_code, MAX(furniture_name) as furniture_name 
-            FROM public.products 
-            WHERE ref_code IS NOT NULL AND familia_code IN (${fFilter}) ${mFilter}
-            GROUP BY ref_code
+            SELECT ref_code, commercial_measure, MAX(cabinet_name) as cabinet_name
+            FROM public.cabinet_products
+            WHERE status = 'ACTIVO' AND ref_code IS NOT NULL AND familia_code IN (${fFilter})
+            GROUP BY ref_code, commercial_measure
+            ORDER BY ref_code, commercial_measure
         `) || []
-        references = refRecords.map((rec: any) => ({ value: rec.ref_code as string, label: `${rec.ref_code} - ${rec.furniture_name || ''}` })).sort((a: any, b: any) => a.value.localeCompare(b.value))
+        references = refRecords.map((rec: any) => ({
+            value: `${rec.ref_code}|||${rec.commercial_measure || ''}`,
+            label: rec.commercial_measure
+                ? `${rec.cabinet_name || rec.ref_code} - ${rec.commercial_measure}`
+                : `${rec.cabinet_name || rec.ref_code}`
+        }))
     }
 
-    let measures: string[] = []
-    if (f.length > 0) {
-        const fFilter = f.map((v: string) => `'${v.replace(/'/g, "''")}'`).join(',')
-        const rFilter = r.length > 0 ? `AND ref_code IN (${r.map(v => `'${v.replace(/'/g, "''")}'`).join(',')})` : ''
-
-        const measureRecords = await dbQuery(`
-            SELECT DISTINCT commercial_measure 
-            FROM public.products 
-            WHERE commercial_measure IS NOT NULL AND commercial_measure != '' 
-            AND familia_code IN (${fFilter}) ${rFilter}
-        `) || []
-        measures = measureRecords.map((rec: any) => rec.commercial_measure as string).sort()
-    }
+    // Medidas integradas en referencias — no se exponen como filtro separado.
 
     const hasFilterMsg = !hasFilter ? (
         <TableRow>
-            <TableCell colSpan={4} className="h-[400px] text-center">
+            <TableCell colSpan={7} className="h-[400px] text-center">
                 <div className="flex flex-col items-center justify-center max-w-sm mx-auto space-y-4">
                     <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-2">
                         <Search className="w-8 h-8 text-slate-400" />
                     </div>
                     <h3 className="text-lg font-semibold text-slate-900">Encuentra tus productos</h3>
                     <p className="text-sm text-slate-500 text-center leading-relaxed">
-                        Selecciona una <b>Familia</b>, <b>Referencia</b> o <b>Medida</b> en la barra superior para empezar a explorar y gestionar el catálogo técnico.
+                        Selecciona una <b>Familia</b>, <b>Referencia con su medida</b> en la barra superior para empezar a explorar y gestionar el catálogo técnico.
                     </p>
                 </div>
             </TableCell>
         </TableRow>
     ) : products.length === 0 ? (
         <TableRow>
-            <TableCell colSpan={4} className="h-32 text-center text-muted-foreground">
+            <TableCell colSpan={7} className="h-32 text-center text-muted-foreground">
                 No se encontraron productos para los filtros seleccionados.
             </TableCell>
         </TableRow>
@@ -127,6 +127,7 @@ export default async function ProductsPage({
                     </p>
                 </div>
                 <div className="flex flex-col sm:flex-row flex-wrap items-start sm:items-center gap-3">
+                    <ImportCsvButton />
                     <Link href="/families">
                         <Button variant="outline" className="w-full sm:w-auto border-slate-200 text-slate-600 hover:bg-slate-50">
                             <PlusCircle className="mr-2 h-4 w-4" />
@@ -139,7 +140,7 @@ export default async function ProductsPage({
                             Cambios masivos
                         </Button>
                     </Link>
-                    <Link href="/products/new">
+                    <Link href={`/products/new${filterQuery}`}>
                         <Button className="w-full sm:w-auto shadow-sm">
                             <PlusCircle className="mr-2 h-4 w-4" />
                             Agregar Producto
@@ -152,28 +153,22 @@ export default async function ProductsPage({
             <div className="flex flex-col gap-6">
                 
                 {/* Filters & Actions Toolbar */}
-                <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between p-4 bg-white border border-slate-200 rounded-xl shadow-soft">
-                    <div className="w-full lg:w-auto flex-1">
-                        <ProductSearch families={families} references={references} measures={measures} />
-                    </div>
-                    <div className="flex items-center gap-3 w-full lg:w-auto">
-                        <ImportCsvButton />
-                        <AiTranslateButton />
-                    </div>
+                <div className="p-4 bg-white border border-slate-200 rounded-xl shadow-soft">
+                    <ProductSearch families={families} references={references} />
                 </div>
 
                 {/* Data Table */}
                 <div className="bg-white rounded-xl border border-slate-200 shadow-premium overflow-hidden">
                     <Table>
-                        <TableHeader>
+                        <TableHeader className="bg-slate-50/50">
                             <TableRow>
-                                <TableHead className="w-[140px]">Código</TableHead>
-                                <TableHead className="min-w-[200px]">Descripción SAP</TableHead>
-                                <TableHead className="min-w-[200px]">Nombre Final</TableHead>
-                                <TableHead className="min-w-[200px]">Nombre EN</TableHead>
-                                <TableHead className="w-[120px]">Color</TableHead>
-                                <TableHead className="w-[130px]">Estado</TableHead>
-                                <TableHead className="text-right w-[100px]">Acciones</TableHead>
+                                <TableHead className="w-[140px] uppercase tracking-wider text-[10px] font-bold text-slate-500">Código</TableHead>
+                                <TableHead className="min-w-[200px] uppercase tracking-wider text-[10px] font-bold text-slate-500">Descripción SAP</TableHead>
+                                <TableHead className="min-w-[200px] uppercase tracking-wider text-[10px] font-bold text-slate-500">Nombre Final (ES)</TableHead>
+                                <TableHead className="min-w-[200px] uppercase tracking-wider text-[10px] font-bold text-slate-500">Nombre Final (EN)</TableHead>
+                                <TableHead className="w-[120px] uppercase tracking-wider text-[10px] font-bold text-slate-500">Color</TableHead>
+                                <TableHead className="w-[130px] uppercase tracking-wider text-[10px] font-bold text-slate-500">Estado</TableHead>
+                                <TableHead className="text-right w-[100px] uppercase tracking-wider text-[10px] font-bold text-slate-500">Acciones</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -192,20 +187,21 @@ export default async function ProductsPage({
                                     </TableCell>
                                     <TableCell>
                                         <Badge
-                                            variant={
+                                            className={cn(
+                                                "text-[10px] px-2 py-0.5 font-semibold uppercase tracking-tight ring-1 ring-inset",
                                                 product.validation_status === 'ready'
-                                                    ? 'default'
+                                                    ? "bg-indigo-50 text-indigo-700 ring-indigo-700/10 hover:bg-indigo-50"
                                                     : product.validation_status === 'needs_review'
-                                                        ? 'destructive'
-                                                        : 'secondary'
-                                            }
+                                                        ? "bg-rose-50 text-rose-700 ring-rose-700/10 hover:bg-rose-50"
+                                                        : "bg-slate-50 text-slate-600 ring-slate-600/10 hover:bg-slate-50"
+                                            )}
                                         >
                                             {product.validation_status === 'incomplete' ? 'Incompleto' :
                                                 product.validation_status === 'needs_review' ? 'Revisar' : 'Listo'}
                                         </Badge>
                                     </TableCell>
                                     <TableCell className="text-right">
-                                        <Link href={`/products/${product.id}`}>
+                                        <Link href={`/products/${product.id}${filterQuery}`}>
                                             <Button variant="ghost" size="sm" className="font-semibold text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50">Editar</Button>
                                         </Link>
                                     </TableCell>

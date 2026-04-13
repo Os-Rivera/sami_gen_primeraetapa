@@ -3,7 +3,7 @@ import { dbQuery } from '../src/lib/supabase'
 
 async function run() {
     console.log('Fetching all products...')
-    const products = await dbQuery('SELECT id, furniture_name, line, sap_description, designation, accessory_text FROM public.products')
+    const products = await dbQuery('SELECT id, cabinet_name, line, sap_description, designation, accessory_text FROM public.cabinet_products')
     
     if (!products) {
         console.error('Error fetching products')
@@ -15,7 +15,7 @@ async function run() {
     let updates = []
 
     for (const p of products) {
-        if (!p.furniture_name) continue;
+        if (!p.cabinet_name) continue;
 
         let newDesignation = p.designation;
         let originalText = p.accessory_text?.toUpperCase() || '';
@@ -53,7 +53,7 @@ async function run() {
         const finalSet = new Set(extractedOriginal);
         const pushAcc = (val: string) => finalSet.add(val);
         
-        const name = p.furniture_name.toUpperCase()
+        const name = p.cabinet_name.toUpperCase()
         const line = p.line?.toUpperCase() || ''
         const descUpper = p.sap_description?.toUpperCase() || ''
 
@@ -125,7 +125,7 @@ async function run() {
     // Batch updates en Supabase dbQuery (es uno por uno o usar un CASE enorme, 
     // pero con dbQuery podemos mandar queries individuales de manera segura)
     for (const u of updates) {
-        let sql = `UPDATE public.products SET designation = ${u.designation ? `'${u.designation}'` : 'NULL'}, accessory_text = ${u.accessory_text ? `'${u.accessory_text}'` : 'NULL'} WHERE id = '${u.id}'`;
+        let sql = `UPDATE public.cabinet_products SET designation = ${u.designation ? `'${u.designation}'` : 'NULL'}, accessory_text = ${u.accessory_text ? `'${u.accessory_text}'` : 'NULL'} WHERE id = '${u.id}'`;
         await dbQuery(sql);
         totalUpdated++;
         if (totalUpdated % 50 === 0) console.log(`Updated ${totalUpdated} / ${updates.length}`);

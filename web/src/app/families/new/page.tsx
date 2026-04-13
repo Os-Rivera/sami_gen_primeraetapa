@@ -7,10 +7,12 @@ import { Label } from '@/components/ui/label'
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import Link from 'next/link'
-import { createFamilyAction } from '@/app/products/actions'
+import { upsertFamilyAction } from '@/app/products/actions'
 import { ArrowLeft } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 
 export default function NewFamilyPage() {
+    const router = useRouter()
     const [formData, setFormData] = useState({
         code: '',
         name: '',
@@ -30,7 +32,8 @@ export default function NewFamilyPage() {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
-        await createFamilyAction(formData)
+        await upsertFamilyAction(formData)
+        router.push('/families')
     }
 
     return (
@@ -80,7 +83,7 @@ export default function NewFamilyPage() {
                         <div className="grid gap-6 sm:grid-cols-2">
                             <div className="grid gap-2">
                                 <Label className="text-sm font-medium text-slate-700">Línea</Label>
-                                <Select value={(formData.line as string) || ''} onValueChange={(v) => handleSelectChange('line', v)}>
+                                <Select value={(formData.line || '')} onValueChange={(v) => handleSelectChange('line', v || '')}>
                                     <SelectTrigger className="w-full bg-slate-50 border-slate-200 h-9">
                                         <SelectValue placeholder="Seleccionar línea" />
                                     </SelectTrigger>
@@ -96,7 +99,7 @@ export default function NewFamilyPage() {
 
                             <div className="grid gap-2">
                                 <Label className="text-sm font-medium text-slate-700">Zona (Ambiente)</Label>
-                                <Select value={(formData.zone_home as string) || ''} onValueChange={(v) => handleSelectChange('zone_home', v)}>
+                                <Select value={(formData.zone_home || '')} onValueChange={(v) => handleSelectChange('zone_home', v || '')}>
                                     <SelectTrigger className="w-full bg-slate-50 border-slate-200 h-9">
                                         <SelectValue placeholder="Seleccionar zona" />
                                     </SelectTrigger>
@@ -112,7 +115,7 @@ export default function NewFamilyPage() {
                         <div className="grid gap-6 sm:grid-cols-2">
                             <div className="grid gap-2">
                                 <Label className="text-sm font-medium text-slate-700">Tipo de Producto</Label>
-                                <Select value={(formData.product_type as string) || ''} onValueChange={(v) => handleSelectChange('product_type', v)}>
+                                <Select value={(formData.product_type || '')} onValueChange={(v) => handleSelectChange('product_type', v || '')}>
                                     <SelectTrigger className="w-full bg-slate-50 border-slate-200 h-9">
                                         <SelectValue placeholder="Seleccionar tipo" />
                                     </SelectTrigger>
@@ -127,7 +130,7 @@ export default function NewFamilyPage() {
 
                             <div className="grid gap-2">
                                 <Label className="text-sm font-medium text-slate-700">Uso / Destino</Label>
-                                <Select value={(formData.use_destination as string) || ''} onValueChange={(v) => handleSelectChange('use_destination', v)}>
+                                <Select value={(formData.use_destination || '')} onValueChange={(v) => handleSelectChange('use_destination', v || '')}>
                                     <SelectTrigger className="w-full bg-slate-50 border-slate-200 h-9">
                                         <SelectValue placeholder="Seleccionar destino" />
                                     </SelectTrigger>

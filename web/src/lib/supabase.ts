@@ -4,18 +4,29 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
 // ============================================================
-// Cliente admin usando Management API HTTP directamente
-// Bypasea el RLS completamente para operaciones server-side
+// Cliente Supabase estándar (operaciones server-side con anon key)
+// Las lecturas van por PostgREST REST API — sin límites del Management API
+// Las escrituras masivas van por RPC (bulk_update_product_names)
 // ============================================================
-const SUPABASE_PROJECT_ID = 'nbifmxggfusipomspoly'
-const SUPABASE_MGMT_TOKEN = process.env.SUPABASE_ACCESS_TOKEN || ''
+
+// Singleton para server-side (evita múltiples instancias en HMR)
+const globalForSupabase = globalThis as unknown as { _supabaseServer: ReturnType<typeof createClient> }
+
+export const supabaseServer = globalForSupabase._supabaseServer || createClient(
+    supabaseUrl,
+    process.env.SUPABASE_SERVICE_ROLE_KEY || 
+    process.env.SUPABASE_SECRET_KEY || 
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY || 
+    supabaseAnonKey,
+    { auth: { persistSession: false, autoRefreshToken: false } }
+)
+if (process.env.NODE_ENV !== 'production') globalForSupabase._supabaseServer = supabaseServer
 
 /**
- * Ejecuta SQL directamente via Management API (sin restricción RLS)
- * Para uso EXCLUSIVO en Server Components y API Routes (server-side)
+ * Ejecuta SQL crudo vía el endpoint correcto de la Management API de Supabase.
+ * Para operaciones masivas de escritura usar supabase.rpc('bulk_update_product_names').
  */
 export async function dbQuery(sql: string, values?: (string | number | boolean | null)[]): Promise<any> {
-    // Preparar query con valores si se proveen (simple template replacement)
     let finalSql = sql
     if (values && values.length > 0) {
         let i = 0
@@ -28,30 +39,30 @@ export async function dbQuery(sql: string, values?: (string | number | boolean |
         })
     }
 
-    const res = await fetch(`https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_ID}/database/query`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${SUPABASE_MGMT_TOKEN}`
-        },
-        body: JSON.stringify({ query: finalSql }),
-        cache: 'no-store'
-    })
-
-    if (!res.ok) {
-        const text = await res.text()
-        throw new Error(`DB Query Error (${res.status}): ${text}`)
+    try {
+        // Usamos el RPC 'exec_sql' para ejecutar SQL crudo de forma segura y rápida
+        // Esto evita depender del Management API de Supabase y sus límites/tokens inestables
+        const { data, error } = await supabaseServer.rpc('exec_sql', { query_text: finalSql })
+        
+        if (error) throw error
+        
+        // Si el resultado es el objeto de éxito de DML (UPDATE/INSERT/DELETE)
+        if (data && typeof data === 'object' && 'success' in data && data.success === true) {
+            return data
+        }
+        
+        return data || []
+    } catch (err: any) {
+        throw new Error(`DB Query Error: ${err.message}`)
     }
-
-    return res.json()
 }
 
 // ============================================================
-// Cliente Supabase público (para operaciones autenticadas client-side)
+// Cliente Supabase público (para operaciones client-side y RPC)
 // ============================================================
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     auth: { persistSession: false, autoRefreshToken: false }
 })
 
-// Alias admin = mismo cliente (usa dbQuery para server-side)
-export const supabaseAdmin = supabase
+// Alias admin = cliente con privilegios de service role (bypassa RLS)
+export const supabaseAdmin = supabaseServer

@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { Search, Download, AlertTriangle, X } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -21,9 +22,10 @@ interface GenerateClientProps {
     templates: TemplateOption[]
     families: { value: string, label: string }[]
     references: { value: string, label: string }[]
-    measures: string[]
     initialTemplateId: string | null
     hasFilter: boolean
+    rules: any[]
+    isExternalSource?: boolean
 }
 
 export function GenerateClient({
@@ -31,14 +33,46 @@ export function GenerateClient({
     templates,
     families,
     references,
-    measures,
     initialTemplateId,
     hasFilter,
+    rules,
+    isExternalSource = false,
 }: GenerateClientProps) {
+    const router = useRouter()
     const [selectedIds, setSelectedIds] = useState<string[]>([])
+    const [isLoaded, setIsLoaded] = useState(false)
+
+    // Cargar selección inicial desde localStorage
+    useEffect(() => {
+        const saved = localStorage.getItem('generate-selected-ids')
+        if (saved) {
+            try {
+                setSelectedIds(JSON.parse(saved))
+            } catch (e) {
+                console.error("Error loading selected ids", e)
+            }
+        }
+        setIsLoaded(true)
+    }, [])
+
+    // Persistir selección cuando cambie
+    useEffect(() => {
+        if (isLoaded) {
+            localStorage.setItem('generate-selected-ids', JSON.stringify(selectedIds))
+        }
+    }, [selectedIds, isLoaded])
+
     const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
         initialTemplateId ?? (templates[0]?.id ?? null)
     )
+
+    // Sincronizar selección de plantilla con la URL si cambia externamente (ej: restauración desde localStorage)
+    useEffect(() => {
+        if (initialTemplateId && initialTemplateId !== selectedTemplateId) {
+            setSelectedTemplateId(initialTemplateId)
+        }
+    }, [initialTemplateId])
+
     const [showBulkExport, setShowBulkExport] = useState(false)
 
     const selectedTemplate = useMemo(
@@ -81,20 +115,30 @@ export function GenerateClient({
     const handleTemplateChange = useCallback((id: string) => {
         setSelectedTemplateId(id)
         setSelectedIds([]) // reset selection when template changes
-    }, [])
+        
+        // Sincronizar con la URL para refrescar el componente de servidor y los filtros
+        const params = new URLSearchParams(window.location.search)
+        params.set('template_id', id)
+        router.push(`/generate?${params.toString()}`)
+    }, [router])
 
     return (
         <div className="flex flex-col gap-6">
             {/* Toolbar */}
             <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between p-4 bg-white border border-slate-200 rounded-xl shadow-sm">
                 <div className="w-full lg:w-auto flex-1">
-                    <GenerateFilters
-                        families={families}
-                        references={references}
-                        measures={measures}
-                    />
+                    {!isExternalSource ? (
+                        <GenerateFilters
+                            families={families}
+                            references={references}
+                        />
+                    ) : (
+                        <div className="flex items-center gap-2">
+                            <span className="text-sm text-slate-500 font-medium px-2 py-1 bg-indigo-50 text-indigo-700 rounded-md ring-1 ring-indigo-200">Dataset Externo (No aplica filtros de Familia)</span>
+                        </div>
+                    )}
                 </div>
-                <div className="flex items-center gap-3 w-full lg:w-auto">
+                <div className="flex items-center gap-3 w-full lg:w-auto mt-3 lg:mt-0">
                     <TemplatePicker
                         templates={templates}
                         selectedTemplateId={selectedTemplateId}
@@ -127,7 +171,7 @@ export function GenerateClient({
                         </div>
                         <h3 className="text-base font-semibold text-slate-800">Selecciona productos a generar</h3>
                         <p className="text-sm text-slate-500 mt-1 max-w-xs">
-                            Usa los filtros de <b>Familia</b>, <b>Referencia</b> o <b>Medida</b> para cargar productos y poder seleccionarlos.
+                            Usa los filtros de <b>Familia</b> y <b>Referencia</b> para cargar productos y poder seleccionarlos.
                         </p>
                     </div>
                 ) : (
@@ -184,7 +228,7 @@ export function GenerateClient({
                                 className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm"
                             >
                                 <Download className="w-4 h-4 mr-2" />
-                                Exportar {selectedIds.length} PDF{selectedIds.length > 1 ? 's' : ''}
+                                Exportar ({selectedIds.length})
                             </Button>
                         </div>
                     </div>
@@ -193,18 +237,21 @@ export function GenerateClient({
 
             {/* Dialog de exportación masiva */}
             <Dialog open={showBulkExport} onOpenChange={setShowBulkExport}>
-                <DialogContent className="max-w-xl rounded-2xl">
-                    <DialogHeader>
+                <DialogContent className="max-w-xl rounded-2xl max-h-[90vh] flex flex-col overflow-hidden">
+                    <DialogHeader className="shrink-0">
                         <DialogTitle className="flex items-center gap-2 text-lg">
                             <Download className="w-5 h-5 text-indigo-500" />
                             Exportación masiva
                         </DialogTitle>
                     </DialogHeader>
-                    <BulkExportPanel
-                        selectedProducts={selectedProducts}
-                        template={selectedTemplate}
-                        onClose={() => setShowBulkExport(false)}
-                    />
+                    <div className="overflow-y-auto flex-1 min-h-0">
+                        <BulkExportPanel
+                            selectedProducts={selectedProducts}
+                            template={selectedTemplate}
+                            rules={rules}
+                            onClose={() => setShowBulkExport(false)}
+                        />
+                    </div>
                 </DialogContent>
             </Dialog>
         </div>

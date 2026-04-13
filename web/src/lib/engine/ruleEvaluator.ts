@@ -14,6 +14,7 @@ export interface RuleEngineResult {
     finalNameEs: string
     activeIcons: string[]
     trace: EvaluationTrace[]
+    activeVariableIds: string[] // Tracking which fields were used in the final name
     transformedProduct: Product // Returned to show modified attributes (e.g. rh_flag)
 }
 
@@ -27,22 +28,25 @@ function evaluateCondition(expression: string, product: Product): boolean {
         
         return parts.every(expr => {
             if (expr.includes('!=null')) {
-                const field = expr.split('!=null')[0] as keyof Product
-                return product[field] !== null && product[field] !== undefined && product[field] !== ''
+                const field = expr.split('!=null')[0].toLowerCase() as keyof Product
+                const val = product[field]
+                // 'NA' means "No Aplica" — treat as falsy (omit from name)
+                return val !== null && val !== undefined && val !== '' && String(val).trim().toUpperCase() !== 'NA'
             }
 
             if (expr.includes('==true')) {
-                const field = expr.split('==true')[0] as keyof Product
+                const field = expr.split('==true')[0].toLowerCase() as keyof Product
                 return product[field] === true
             }
 
             if (expr.includes('==false')) {
-                const field = expr.split('==false')[0] as keyof Product
+                const field = expr.split('==false')[0].toLowerCase() as keyof Product
                 return product[field] === false
             }
 
             if (expr.includes('==')) {
-                const [field, valRaw] = expr.split('==') as [keyof Product, string]
+                const [fieldRaw, valRaw] = expr.split('==') 
+                const field = fieldRaw.toLowerCase() as keyof Product
                 const val = valRaw.replace(/['"]/g, '') 
                 return String(product[field]) === val
             }
@@ -57,7 +61,7 @@ function evaluateCondition(expression: string, product: Product): boolean {
 
 function hydratePayload(payload: string, product: Product): string {
     return payload.replace(/{([^}]+)}/g, (_, field) => {
-        const value = product[field as keyof Product]
+        const value = product[field.toLowerCase() as keyof Product]
         return value ? String(value) : ''
     })
 }
@@ -71,6 +75,7 @@ export function evaluateProductRules(product: Product, rules: Rule[]): RuleEngin
         finalNameEs: '',
         activeIcons: [],
         trace: [],
+        activeVariableIds: [],
         transformedProduct: { ...product } 
     }
 
@@ -81,6 +86,10 @@ export function evaluateProductRules(product: Product, rules: Rule[]): RuleEngin
             if (r.target_entity && r.target_entity !== 'product' && r.rule_type === 'name_component') {
                 const requiredType = r.target_entity.trim().toUpperCase()
                 const productType = String(result.transformedProduct.product_type || '').trim().toUpperCase()
+                
+                // Fallback: if productType is empty, assume it matches 'MUEBLE' rules (system base)
+                if (productType === '' && requiredType === 'MUEBLE') return true
+                
                 return requiredType === productType
             }
             return true
@@ -143,6 +152,29 @@ export function evaluateProductRules(product: Product, rules: Rule[]): RuleEngin
                     nameComponents.push(textToAppend.trim())
                     traceRecord.actionTaken = 'appended_name_component'
                     traceRecord.payload = textToAppend.trim()
+
+                    // Extract variable IDs from action_payload (e.g., {cabinet_name})
+                    const matches = rule.action_payload.match(/{([^}]+)}/g)
+                    if (matches) {
+                        matches.forEach(m => {
+                            const field = m.replace(/[{}]/g, '')
+                            if (!result.activeVariableIds.includes(field)) {
+                                result.activeVariableIds.push(field)
+                            }
+                        })
+                    }
+
+                    // Extract variable IDs from condition_expression (for fixed text components)
+                    // e.g. "rh_flag == true" -> it uses 'rh' conceptually
+                    const condTokens = rule.condition_expression.split(/[&|!=\s<>]+/).filter(Boolean)
+                    condTokens.forEach(t => {
+                        // Check if t is a likely field name (not a keyword or literal)
+                        if (t !== 'true' && t !== 'false' && t !== 'null' && isNaN(Number(t))) {
+                            if (!result.activeVariableIds.includes(t)) {
+                                result.activeVariableIds.push(t)
+                            }
+                        }
+                    })
                 }
             }
 

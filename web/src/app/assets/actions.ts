@@ -6,7 +6,7 @@ import { revalidatePath } from 'next/cache'
 export async function getFamiliesAction() {
     const families = await dbQuery(`
         SELECT DISTINCT p.familia_code, f.name
-        FROM public.products p
+        FROM public.cabinet_products p
         LEFT JOIN public.familias f ON f.code = CASE 
             WHEN p.familia_code ~ '^[VCP].*' THEN SUBSTRING(p.familia_code FROM 2)
             ELSE p.familia_code 
@@ -26,15 +26,16 @@ export async function getReferencesByFamilyAction(familyCodes: string[]) {
     
     const filter = familyCodes.map(v => `'${v.replace(/'/g, "''")}'`).join(',')
     const refRecords = await dbQuery(`
-        SELECT DISTINCT ref_code, furniture_name 
-        FROM public.products 
+        SELECT ref_code, commercial_measure, MAX(cabinet_name) as cabinet_name
+        FROM public.cabinet_products 
         WHERE ref_code IS NOT NULL AND familia_code IN (${filter})
-        ORDER BY ref_code ASC
+        GROUP BY ref_code, commercial_measure
+        ORDER BY ref_code, commercial_measure
     `) || []
     
     return refRecords.map((rec: any) => ({ 
-        value: rec.ref_code as string, 
-        label: `${rec.ref_code} - ${rec.furniture_name || ''}` 
+        value: `${rec.ref_code}|||${rec.commercial_measure || ''}`, 
+        label: rec.commercial_measure ? `${rec.cabinet_name || rec.ref_code} - ${rec.commercial_measure}` : `${rec.cabinet_name || rec.ref_code}`
     }))
 }
 
@@ -51,7 +52,7 @@ export async function getMeasuresByFamilyAndRefAction(familyCodes: string[], ref
 
     const measureRecords = await dbQuery(`
         SELECT DISTINCT commercial_measure 
-        FROM public.products 
+        FROM public.cabinet_products 
         WHERE commercial_measure IS NOT NULL AND (${whereParts.join(' OR ')})
         ORDER BY commercial_measure ASC
     `) || []
@@ -83,21 +84,28 @@ export async function associateIsometricAction(data: {
     let whereParts = []
     
     if (referenceCodes.length > 0) {
-        whereParts.push(`ref_code IN (${referenceCodes.map(v => `'${v.replace(/'/g, "''")}'`).join(',')})`)
+        // Los valores de referencia pueden ser puros "ref_code" o compuestos "ref_code|||commercial_measure"
+        const specificPairs = referenceCodes.map(v => {
+            const [rc, cm] = v.split('|||')
+            if (cm) {
+                return `(ref_code = '${rc.replace(/'/g, "''")}' AND commercial_measure = '${cm.replace(/'/g, "''")}')`
+            }
+            return `ref_code = '${rc.replace(/'/g, "''")}'`
+        })
+        whereParts.push(`(${specificPairs.join(' OR ')})`)
     } else if (familyCodes.length > 0) {
         whereParts.push(`familia_code IN (${familyCodes.map(v => `'${v.replace(/'/g, "''")}'`).join(',')})`)
+        if (measureCodes && measureCodes.length > 0) {
+            whereParts.push(`commercial_measure IN (${measureCodes.map(v => `'${v.replace(/'/g, "''")}'`).join(',')})`)
+        }
     } else {
         throw new Error("Target selection (Family or Reference) is required")
-    }
-
-    if (measureCodes.length > 0) {
-        whereParts.push(`commercial_measure IN (${measureCodes.map(v => `'${v.replace(/'/g, "''")}'`).join(',')})`)
     }
 
     const whereClause = `WHERE ${whereParts.join(' AND ')}`
 
     await dbQuery(`
-        UPDATE public.products 
+        UPDATE public.cabinet_products 
         SET isometric_asset_id = '${assetId}', 
             isometric_path = '${filePath}',
             updated_at = now()
@@ -116,9 +124,14 @@ export async function deleteAssetAction(assetId: string) {
         'Logo Empresa Pordefecto',
         'Isométrico (Placeholder)',
         'Icono RH Fijo',
-        'Icono Canto 2mm',
+        'Icono Canto',
         'Icono Cierre Lento',
-        'Icono Extensión Total'
+        'Icono Extensión Total',
+        'Icono CARB2',
+        'Logo CHILEMAT',
+        'Logo D-ACQUA',
+        'Logo PROMART',
+        'Logo FERMETAL'
     )`) || []
     
     if (defaults.some((d: any) => d.id === assetId)) {
@@ -142,6 +155,19 @@ export async function updateAssetAction(assetId: string, data: { name?: string, 
         SET ${updates.join(', ')}, updated_at = now() 
         WHERE id = '${assetId}'
     `)
+
+    // Propagate new file_path to all products that reference this asset as isometric
+    // This prevents drift between the asset record and the product's cached snapshot path
+    if (data.file_path) {
+        await dbQuery(`
+            UPDATE public.cabinet_products
+            SET isometric_path = '${data.file_path.replace(/'/g, "''")}',
+                updated_at = now()
+            WHERE isometric_asset_id = '${assetId}'
+        `)
+    }
+
     revalidatePath('/assets')
+    revalidatePath('/products')
     return { success: true }
 }
